@@ -1,0 +1,49 @@
+:root {
+  --TColor: #C7A247;
+  --CTColor: #4F9EDE;
+  --LastColor: #5a5a5a;
+  --BlackColor: #0c0f12;
+  --LightColor: #ccba7c;
+  --DarkColor: #413a27;
+}
+
+.T {
+  color: var(--TColor);
+}
+
+.CT {
+  color: var(--CTColor);
+}
+
+html, body {
+  height: 100%;
+  margin: 0 auto;
+  padding: 0;
+  font-family: "Roboto Light", sans-serif;
+}
+
+.app-container {
+  background-color: var(--BlackColor);
+  color: var(--LightColor) !important;
+}
+
+.dead {
+  background-image: url("assets/icons/csgo/dead.svg");
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
+}
+
+.defuse {
+  background-image: url("assets/icons/csgo/defuse.svg");
+  filter: brightness(1.5) !important;
+}
+
+.vest {
+  background-image: url("assets/icons/csgo/vest.svg");
+  background-size: 50%;
+}
+
+.vesthelm {
+  background-image: url("assets/icons/csgo/vesthelm.svg");
+}
