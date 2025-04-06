@@ -69,12 +69,6 @@ class Controls extends Component {
             onClick={_ => this.playRoundIncrement(1)}>&#xe044;
           </button>
         </div>
-          {/* <button className="w3-button w3-ripple w3-dark-gray material-icons" onClick={_ => this.playSpeed(.5)}>
-            &#xe068;
-          </button>
-          <button className="w3-button w3-ripple w3-dark-gray material-icons" onClick={_ => this.playSpeed(1)}>
-            &#xe037;
-          </button> */}
       </div>
     )
   }

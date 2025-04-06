@@ -6,7 +6,7 @@ import {
   MSG_PLAY_TOGGLE, MSG_PROGRESS_MOVE
 } from "./constants";
 
-const defaultInterval = 16
+const defaultInterval = 1000/70
 
 class Player {
   constructor(messageBus) {

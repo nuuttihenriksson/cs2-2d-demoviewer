@@ -194,9 +194,9 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	fileBaseName := filepath.Base(handler.Filename)
+	fileBaseName = strings.TrimSuffix(fileBaseName, ".gz")
+	fileBaseName = strings.TrimSuffix(fileBaseName, ".bz2")
 	fileBaseName = strings.TrimSuffix(fileBaseName, ".dem")
-	fileBaseName = strings.TrimSuffix(fileBaseName, ".dem.gz")
-	fileBaseName = strings.TrimSuffix(fileBaseName, ".dem.bz2")
 
 	filePath := filepath.Join("./demos", handler.Filename)
 
@@ -227,6 +227,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse the demo file and save parsed results
+	outFile.Close()
 	err = parseDemoFile(filePath)
 	if err != nil {
 		http.Error(w, "Error parsing demo file", http.StatusInternalServerError)
@@ -246,7 +247,18 @@ func parseDemoFile(filePath string) error {
 	}
 	defer file.Close()
 
-	parsedFilePath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".pb"
+	parsedFilePath := ""
+	if strings.HasSuffix(filePath, ".bz2") {
+		parsedFilePath = strings.TrimSuffix(filePath, ".bz2")
+	}
+	if strings.HasSuffix(filePath, ".gz") {
+		parsedFilePath = strings.TrimSuffix(filePath, ".gz")
+	}
+	if strings.HasSuffix(parsedFilePath, ".dem") {
+		parsedFilePath = strings.TrimSuffix(parsedFilePath, ".dem")
+	}
+	parsedFilePath = parsedFilePath + ".pb"
+
 	outFile, err := os.Create(parsedFilePath)
 	if err != nil {
 		return err
@@ -261,7 +273,7 @@ func parseDemoFile(filePath string) error {
 			outFile.Write(protoMsg)                             // Write message
 		}
 	})
-
+	outFile.Close()
 	return err
 }
 
