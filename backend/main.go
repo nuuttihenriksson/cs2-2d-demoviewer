@@ -247,7 +247,7 @@ func parseDemoFile(filePath string) error {
 	}
 	defer file.Close()
 
-	parsedFilePath := ""
+	parsedFilePath := filePath
 	if strings.HasSuffix(filePath, ".bz2") {
 		parsedFilePath = strings.TrimSuffix(filePath, ".bz2")
 	}
