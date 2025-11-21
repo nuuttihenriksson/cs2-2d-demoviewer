@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"github.com/alexflint/go-arg"
 	"github.com/gorilla/websocket"
-	"github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
@@ -33,7 +33,7 @@ var embeddedFiles embed.FS
 func allowCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		// Handle preflight request
@@ -85,7 +85,7 @@ func server() {
 	//mux.Handle("/player/", http.StripPrefix("/player", http.FileServer(http.Dir("web/player/build"))))
 
 	mux.HandleFunc("/ws", func(writer http.ResponseWriter, request *http.Request) {
-		// Upgrade our raw HTTP connection to a websocket based one
+		// Upgrade raw HTTP connection to a websocket based one
 		upgrader := websocket.Upgrader{}
 		if request.Host == "localhost:8080" {
 			upgrader.CheckOrigin = func(r *http.Request) bool {
@@ -141,10 +141,11 @@ func server() {
 		}()
 	})
 	mux.HandleFunc("/upload", handleUpload)
+	mux.HandleFunc("/delete", handleDeleteDemo)
 	mux.HandleFunc("/demos", handleListDemos)
 	log.L().Info("HTTP server listening on ...", zap.String("listen", config.Listen), zap.Int("port", config.Port))
 	// log.Println("Listening on ", config.Port, " ...")
-	// listenErr := http.ListenAndServe(fmt.Sprintf("%s:%d", config.Listen, config.Port), allowCORS(mux))
+	//listenErr := http.ListenAndServe(fmt.Sprintf("%s:%d", config.Listen, config.Port), allowCORS(mux))
 	listenErr := http.ListenAndServe(fmt.Sprintf("%s:%d", config.Listen, config.Port), mux)
 	log.L().Fatal("failed to listen", zap.Error(listenErr))
 }
@@ -182,6 +183,22 @@ func handleListDemos(w http.ResponseWriter, r *http.Request) {
 	})
 
 	json.NewEncoder(w).Encode(demos)
+}
+
+func handleDeleteDemo(w http.ResponseWriter, r *http.Request) {
+
+	id := r.URL.Query().Get("id")
+
+	if id == "" {
+        http.Error(w, "Missing id", http.StatusBadRequest)
+        return
+    }
+
+	filePath := fmt.Sprintf("./demos/%s.pb", id)
+
+	os.Remove(filePath)
+
+	w.Write([]byte("File deleted"))
 }
 
 func handleUpload(w http.ResponseWriter, r *http.Request) {
