@@ -5,14 +5,14 @@ import (
 	"cs2-2d-backend/pkg/message"
 	"fmt"
 	"io"
-	"math"
 	"sort"
 	"time"
 
 	"github.com/golang/geo/r3"
-	dem "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs"
-	"github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/common"
-	"github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/events"
+	dem "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/common"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/events"
+	demsg "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/msg"
 	"go.uber.org/zap"
 )
 
@@ -22,28 +22,32 @@ var zeroVector = r3.Vector{
 	Z: 0,
 }
 
-type heGrenadeWrapper struct {
-	events.GrenadeEventIf
-}
-
-func (s *heGrenadeWrapper) Base() events.GrenadeEvent {
-	base := s.GrenadeEventIf.Base()
-	base.Grenade.Type = common.EqHE // Force HE Grenade type only
-	return base
-}
-
 const velocityDelta = 0.000001 //nolint:golint,unused // unused now
 
 type RoundTimer struct {
 	lastRoundStart time.Duration
 }
 
-var activeSmokes = make(map[int]int) // Maps grenade entity ID to tick when it should be removed
-const smokeLifetimeTicks = 128 * 18 
+var activeSmokes = make(map[int]int) // Maps grenade entity ID to the tick when it should be removed
+var deletedSmokes []int // List of already removed smokes
+const smokeLifetimeTicks = 64 * 18 
+
+func isSmokeDeleted(id int) bool {
+    for _, deletedID := range deletedSmokes {
+        if deletedID == id {
+            return true
+        }
+    }
+    return false
+}
 
 func Parse(demoFile io.Reader, handler func(msg *message.Message, state dem.GameState)) error {
 	parser := dem.NewParser(demoFile)
-	defer parser.Close()
+	defer func() {
+		if err := parser.Close(); err != nil {
+			log.L().Error("failed to close parser", zap.Error(err))
+		}
+	}()
 
 	matchErr := parseMatch(parser, handler)
 	if matchErr != nil {
@@ -57,6 +61,10 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 	parseTimer := time.Now()
 	gameStarted := false
 	var mapCS MapCS
+
+	parser.RegisterNetMessageHandler(func(e *demsg.CSVCMsg_ServerInfo) {
+		mapCS = MapNameToMap[e.GetMapName()]
+	})
 
 	// parse one frame to have something
 	if more, err := parser.ParseNextFrame(); !more || err != nil {
@@ -72,29 +80,8 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 	bombH := newBombHandler(parser)
 
 	parser.RegisterEventHandler(func(ge events.GrenadeEventIf) {
-		var msg *message.Message
-		// Matchmaking demos have missing HE Grenade type. Add it manually here:
-		if ge.Base().Grenade != nil {
-			if ge.Base().Grenade.Type == common.EqUnknown && ge.Base().Grenade.String() == "HE Grenade" {
-				log.L().Warn("Replacing unknown HE grenade type with HE Grenade", 
-						zap.Int64("grenade_entity_id", int64(ge.Base().GrenadeEntityID)))
-	
-				//Wrap only the HE Grenade with a safe type
-				safeGrenadeEvent := &heGrenadeWrapper{
-						GrenadeEventIf: ge,
-				}
-				fmt.Print(safeGrenadeEvent)
-				msg = handleGrenadeEvent(safeGrenadeEvent, &mapCS, NewRoundMessage(parser))
-			} else {
-					// Process normally for all other grenades
-				msg = handleGrenadeEvent(ge, &mapCS, NewRoundMessage(parser))
-			}
-		}
-		
-		//msg = handleGrenadeEvent(ge, &mapCS, NewRoundMessage(parser))
-		if msg != nil {
-			roundMessage.Add(msg)
-		}
+		msg := handleGrenadeEvent(ge, &mapCS, NewRoundMessage(parser))
+		roundMessage.Add(msg)
 	})
 
 	parser.RegisterEventHandler(func(e events.WeaponFire) {
@@ -103,9 +90,9 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 	})
 
 	parser.RegisterEventHandler(func(e events.Kill) {
-		// log.Printf("r: '%d', '%+v'", parser.GameState().TotalRoundsPlayed(), e)
 		frag := &message.Frag{
-			Weapon: convertWeapon(e.Weapon.Type),
+			Weapon:     convertWeapon(e.Weapon.Type),
+			IsHeadshot: e.IsHeadshot,
 		}
 		if e.Victim != nil {
 			frag.VictimName = e.Victim.Name
@@ -122,12 +109,8 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 			Frag:    frag,
 		})
 	})
-	parser.RegisterEventHandler(func(e events.RoundEnd) {
-		//log.Printf("round end '%+v' tick '%v' time '%v'", e, parser.CurrentFrame(), parser.CurrentTime())
-		roundMessage.Winner = team(e.Winner)
-	})
+
 	parser.RegisterEventHandler(func(e events.RoundEndOfficial) {
-		//log.Printf("round end offic '%+v' tick '%v' time '%v'", e, parser.CurrentFrame(), parser.CurrentTime())
 		roundMessage.RoundTookSeconds = int32((parser.CurrentTime() - currentRoundTimer.lastRoundStart).Seconds())
 		roundMessage.RoundNo = int32(parser.GameState().TotalRoundsPlayed())
 		roundMessage.EndTick = int32(parser.CurrentFrame())
@@ -136,24 +119,36 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 			Tick:    int32(parser.CurrentFrame()),
 			Round:   roundMessage,
 		}
-		//log.Printf("sending round, messages '%v', roundNo '%v'   T [%v : %v] CT", len(msg.Round.Ticks), msg.Round.RoundNo, msg.Round.TeamState.TScore, msg.Round.TeamState.CTScore)
 		handler(msg, parser.GameState())
 	})
+
 	parser.RegisterEventHandler(func(e events.GamePhaseChanged) {
+		// because last round does not end with RoundEndOfficial event, we're catching it like this.
+		// after that, RoundEnd should be called, which will send the last round message
+		// this is because RoundEndOfficial happens after a little time players can still run around, collect stuff etc.
+		// this does not happen in the last round as everybody just freezes in the last frame.
+		// That's why we don't get proper RoundEndOfficial event
 		if e.NewGamePhase == common.GamePhaseGameEnded {
-			//log.Printf("sending last round ? tick '%v' time '%v', winner '%v'", parser.CurrentFrame(), parser.CurrentTime(), roundMessage.Winner)
 			roundMessage.RoundTookSeconds = int32((parser.CurrentTime() - currentRoundTimer.lastRoundStart).Seconds())
 			roundMessage.RoundNo = int32(parser.GameState().TotalRoundsPlayed() + 1)
 			roundMessage.EndTick = int32(parser.CurrentFrame())
+		}
+	})
+
+	parser.RegisterEventHandler(func(e events.RoundEnd) {
+		roundMessage.Winner = team(e.Winner)
+
+		// send round message if this is the last round (EndTick set by GamePhaseChanged handler)
+		if roundMessage.EndTick > 0 && parser.CurrentFrame() == int(roundMessage.EndTick) {
 			msg := &message.Message{
 				MsgType: message.Message_RoundType,
 				Tick:    int32(parser.CurrentFrame()),
 				Round:   roundMessage,
 			}
-			//log.Printf("sending round, messages '%v', roundNo '%v'   T [%v : %v] CT", len(msg.Round.Ticks), msg.Round.RoundNo, msg.Round.TeamState.TScore, msg.Round.TeamState.CTScore)
 			handler(msg, parser.GameState())
 		}
 	})
+
 	parser.RegisterEventHandler(func(e events.RoundStart) {
 		readyForNewRound = true
 	})
@@ -161,8 +156,6 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 	bombH.registerEvents()
 
 	parser.RegisterEventHandler(func(e events.RoundFreezetimeEnd) {
-		//log.Printf("freezetime end '%+v' tick '%v' time '%v'", e, parser.CurrentFrame(), parser.CurrentTime())
-
 		if readyForNewRound {
 			readyForNewRound = false
 			roundMessage = message.NewRound(parser.CurrentFrame())
@@ -172,7 +165,6 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 		}
 
 		if !gameStarted {
-			mapCS = MapNameToMap[parser.Header().MapName]
 			handler(&message.Message{
 				MsgType: message.Message_InitType,
 				Tick:    int32(parser.CurrentFrame()),
@@ -192,7 +184,7 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 			return err
 		}
 		if !more {
-			log.L().Info("demo parsed", zap.Duration("took", time.Since(parseTimer)), zap.Duration("demo length", parser.Header().PlaybackTime))
+			log.L().Info("demo parsed", zap.Duration("took", time.Since(parseTimer)))
 			handler(&message.Message{
 				MsgType: message.Message_DemoEndType,
 				Tick:    int32(parser.CurrentFrame()),
@@ -207,17 +199,17 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 			continue
 		}
 
-		if parser.CurrentFrame()%1024 == 0 {
-			progressWholePercent := int32(math.Round(float64(parser.Progress()) * 100))
-			handler(&message.Message{
-				MsgType: message.Message_ProgressType,
-				Tick:    int32(parser.CurrentFrame()),
-				Progress: &message.Progress{
-					Progress: progressWholePercent,
-					Message:  "Loading match ...",
-				},
-			}, parser.GameState())
-		}
+		// if parser.CurrentFrame()%1024 == 0 {
+		// 	progressWholePercent := int32(math.Round(float64(parser.Progress()) * 100))
+		// 	handler(&message.Message{
+		// 		MsgType: message.Message_ProgressType,
+		// 		Tick:    int32(parser.CurrentFrame()),
+		// 		Progress: &message.Progress{
+		// 			Progress: progressWholePercent,
+		// 			Message:  "Loading match ...",
+		// 		},
+		// 	}, parser.GameState())
+		// }
 
 		if parser.CurrentFrame()%16 == 0 {
 			roundTime := parser.CurrentTime() - currentRoundTimer.lastRoundStart
@@ -245,10 +237,8 @@ func parseMatch(parser dem.Parser, handler func(msg *message.Message, state dem.
 	}
 }
 
-
 func handleGrenadeEvent(ge events.GrenadeEventIf, mapCS *MapCS, msg *message.Message) *message.Message {
 	x, y := translatePosition(ge.Base().Position, mapCS)
-	//fmt.Print(ge)
 	switch ge.(type) {
 	case events.FlashExplode, events.HeExplode:
 		msg.MsgType = message.Message_GrenadeEventType
@@ -303,24 +293,23 @@ func createTickStateMessage(tick dem.GameState, mapCS *MapCS, parser dem.Parser,
 		var action string
 		if g.WeaponInstance.Type == common.EqHE {
 			// HE for some reason keep on map longer. we want to remove them after they explode
-			exploded, ok := g.Entity.PropertyValue("m_nExplodeEffectIndex")
-			// IntVal is not working, so converting any to string and comparing.
-			stringExploded := fmt.Sprintf("%v", exploded)
-			if ok && stringExploded != "0" {
+			if exploded, ok := g.Entity.PropertyValue("m_nExplodeEffectIndex"); ok && exploded.UInt64() > 0 {
 				continue
 			}
 		}
 		if g.WeaponInstance.Type == common.EqSmoke {
-			if smokeEffect, ok := g.Entity.PropertyValue("m_bDidSmokeEffect"); ok && smokeEffect.BoolVal() {
-				// Track explosion tick if not already tracked
-				/*lifetime, ok := g.Entity.PropertyValue("m_nSmokeEffectTickBegin")
-				18*128 <= int(parser.CurrentFrame())
-				fmt.Print(lifetime.Any.(int))
-				fmt.Print("\n")
-				if ok {
-
-				}*/
-        if _, exists := activeSmokes[g.Entity.ID()]; !exists {
+			if isSmokeDeleted(g.Entity.ID()) {
+				continue
+			}
+			if expireTick, ok := activeSmokes[g.Entity.ID()]; ok {
+				if parser.CurrentFrame() > expireTick {
+					delete(activeSmokes,g.Entity.ID())
+					deletedSmokes = append(deletedSmokes,g.Entity.ID())
+					continue
+				}
+			}
+			if exploded, ok := g.Entity.PropertyValue("m_bDidSmokeEffect"); ok && exploded.BoolVal() {
+				if _, exists := activeSmokes[g.Entity.ID()]; !exists {
 					activeSmokes[g.Entity.ID()] = parser.CurrentFrame() + smokeLifetimeTicks
 				}
 				action = "explode"
@@ -374,8 +363,19 @@ func createTickStateMessage(tick dem.GameState, mapCS *MapCS, parser dem.Parser,
 	}
 }
 
+// adjustAmmoCount corrects the ammo count to match what players see in-game.
+// The demo parser's AmmoInMagazine() returns a value that's 1 less than the actual
+// magazine capacity shown to players (e.g., USP shows 11 instead of 12).
+// This function adds 1 to correct the count and ensures negative values are clamped to 0.
+func adjustAmmoCount(ammoInMagazine int) int32 {
+	if ammoInMagazine > 0 {
+		return int32(ammoInMagazine + 1)
+	}
+	return 0
+}
+
 func transformPlayer(p *common.Player, mapCS *MapCS) *message.Player {
-	x, y := translatePosition(p.LastAlivePosition, mapCS)
+	x, y := translatePosition(p.Position(), mapCS)
 	player := &message.Player{
 		PlayerId: int32(p.UserID),
 		Name:     p.Name,
@@ -391,6 +391,9 @@ func transformPlayer(p *common.Player, mapCS *MapCS) *message.Player {
 		Helmet:   p.HasHelmet(),
 		Defuse:   p.HasDefuseKit(),
 		Money:    int32(p.Money()),
+		Kills:    int32(p.Kills()),
+		Assists:  int32(p.Assists()),
+		Deaths:   int32(p.Deaths()),
 	}
 
 	if w := p.ActiveWeapon(); w != nil {
@@ -399,17 +402,23 @@ func transformPlayer(p *common.Player, mapCS *MapCS) *message.Player {
 
 	//TODO: Grenades should have priority left to right flash > he > smoke > molotov/inc > decoy
 	for _, w := range p.Weapons() {
+		if w.Class() == common.EqClassUnknown {
+			// we don't know what this is, nothing to do here
+			log.L().Debug("unknown eq", zap.Any("weapon", w))
+			continue
+		}
 		weaponString := convertWeapon(w.Type)
 		switch w.Class() {
 		case common.EqClassSMG, common.EqClassHeavy, common.EqClassRifle:
 			player.Primary = weaponString
-			player.PrimaryAmmoMagazine = int32(w.AmmoInMagazine())
+			player.PrimaryAmmoMagazine = adjustAmmoCount(w.AmmoInMagazine())
 			player.PrimaryAmmoReserve = int32(w.AmmoReserve())
 		case common.EqClassPistols:
 			player.Secondary = weaponString
-			player.SecondaryAmmoMagazine = int32(w.AmmoInMagazine())
+			player.SecondaryAmmoMagazine = adjustAmmoCount(w.AmmoInMagazine())
 			player.SecondaryAmmoReserve = int32(w.AmmoReserve())
 		case common.EqClassGrenade:
+			// Grenades are counted directly without adjustment
 			for gi := 0; gi < w.AmmoInMagazine()+w.AmmoReserve(); gi++ {
 				player.Grenades = append(player.Grenades, weaponString)
 			}
@@ -420,10 +429,8 @@ func transformPlayer(p *common.Player, mapCS *MapCS) *message.Player {
 			case common.EqKnife:
 			case common.EqZeus:
 			default:
-				log.Printf("what is this ? '%+v'", w)
+				log.Printf("what is this ? '%+v'\n", w)
 			}
-		case common.EqClassUnknown:
-			log.Printf("what is that???")
 		}
 	}
 	sort.Slice(player.Grenades, func(i, j int) bool {
