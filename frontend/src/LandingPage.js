@@ -55,6 +55,13 @@ export default function LandingPage({ onSelectDemo }) {
     }
   }
 
+  async function handleDelete(demo) {
+    const response = await fetch(`${API_URL}/delete?id=${demo}`, {
+      method: 'DELETE',
+    })
+    fetchDemos();
+  }
+
   return (
     <Box sx={{ p: 4, textAlign: "center" }}>
       <Typography variant="h4" gutterBottom>
@@ -108,6 +115,9 @@ export default function LandingPage({ onSelectDemo }) {
               <ListItem key={demo} disablePadding>
                 <ListItemButton onClick={() => onSelectDemo(demo)}>
                   <ListItemText primary={demo} />
+                </ListItemButton>
+                <ListItemButton onClick={() => handleDelete(demo)}>
+                  <ListItemText primary="Delete" />
                 </ListItemButton>
               </ListItem>
             ))}
