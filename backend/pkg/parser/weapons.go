@@ -3,7 +3,7 @@ package parser
 import (
 	"cs2-2d-backend/pkg/log"
 
-	"github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/common"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/common"
 )
 
 // TODO: unused, remove later. keeping here for now to have model names
@@ -152,7 +152,7 @@ func convertWeapon(equipmentType common.EquipmentType) string {
 	if w, ok := WeaponsEqType[equipmentType]; ok {
 		return w
 	} else {
-		log.Printf("model not found '%s'", equipmentType)
+		log.Printf("model not found (treating as knife) '%+v'\n", equipmentType)
 		return "knife"
 	}
 }
